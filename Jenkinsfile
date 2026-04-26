@@ -41,24 +41,15 @@ pipeline {
 
         stage('SonarQube Analysis') {
     steps {
-        script {
-            def scannerHome = tool 'sonar-scanner'
-            echo "Scanner path: ${scannerHome}"
-
-            withSonarQubeEnv('sq') {
-                sh """
-                echo "Starting SonarQube Scan..."
-                ${scannerHome}/bin/sonar-scanner \
-                -Dsonar.projectKey=zomato \
-                -Dsonar.sources=src \
-                -Dsonar.projectName=Zomato-App \
-                -Dsonar.projectVersion=${BUILD_NUMBER}
-                """
-            }
-        }
+        sh '''
+        /var/lib/jenkins/tools/hudson.plugins.sonar.SonarRunnerInstallation/sonar-scanner/bin/sonar-scanner \
+        -Dsonar.projectKey=zomato \
+        -Dsonar.sources=. \
+        -Dsonar.host.url=http://localhost:9000 \
+        -Dsonar.login=$SONAR_TOKEN
+        '''
     }
-}
-        stage('Quality Gate') {
+}        stage('Quality Gate') {
             steps {
                 timeout(time: 5, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
