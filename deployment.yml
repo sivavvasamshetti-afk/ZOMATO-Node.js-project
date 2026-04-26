@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zomatodeploy
+  labels:
+    app: zomato
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: zomato
+  template:
+    metadata:
+      labels:
+        app: zomato
+    spec:
+      containers:
+      - name: zomatocont
+        image: rajeshtutta123/zomato:latest
+        ports:
+        - containerPort: 80
