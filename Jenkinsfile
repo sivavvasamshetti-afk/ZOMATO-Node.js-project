@@ -10,7 +10,7 @@ pipeline {
         DOCKER_IMAGE = "sivav2516/zomato"
         AWS_REGION = "us-east-1"
         CLUSTER_NAME = "mycluster"
-        RECIPIENTS = "siva.vasamshetti@gmail.com"
+        RECIPIENTS = "siva.vvasamshetti@gmail.com"
     }
 
     stages {
