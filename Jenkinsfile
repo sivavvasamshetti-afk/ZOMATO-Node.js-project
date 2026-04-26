@@ -35,15 +35,15 @@ pipeline {
 
         stage('Test') {
             steps {
-                sh 'npm test || true'
+                sh 'npm test -- --passWithNoTests'
             }
         }
 
         stage('SonarQube Analysis') {
             steps {
-                withSonarQubeEnv('sq') {
-                    script {
-                        def scannerHome = tool 'sonar-scanner'
+                script {
+                    def scannerHome = tool 'sonar-scanner'
+                    withSonarQubeEnv('sq') {
                         sh """
                         ${scannerHome}/bin/sonar-scanner \
                           -Dsonar.projectKey=zomato \
