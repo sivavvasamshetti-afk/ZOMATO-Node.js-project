@@ -156,19 +156,11 @@ stage('Expose Grafana') {
     }
 }
 
-        stage('Deploy to EKS') {
+             stage('Deploy to Kubernetes') {
             steps {
                 sh '''
-                set -e
-
-                export AWS_DEFAULT_REGION=us-east-1
-
-                aws eks update-kubeconfig \
-                    --region $AWS_DEFAULT_REGION \
-                    --name mycluster
-
+                    export KUBECONFIG=/var/lib/jenkins/.kube/config
                 kubectl get nodes
-
                 kubectl apply -f deployment.yml
                 kubectl apply -f service.yml
                 '''
