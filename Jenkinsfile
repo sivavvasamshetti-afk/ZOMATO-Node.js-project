@@ -43,15 +43,16 @@ pipeline {
     steps {
         script {
             def scannerHome = tool 'sonar-scanner'
-            
+            echo "Scanner path: ${scannerHome}"
+
             withSonarQubeEnv('sq') {
                 sh """
-                echo "Running Sonar Scanner..."
+                echo "Starting SonarQube Scan..."
                 ${scannerHome}/bin/sonar-scanner \
-                  -Dsonar.projectKey=zomato \
-                  -Dsonar.sources=src \
-                  -Dsonar.projectName=Zomato-App \
-                  -Dsonar.projectVersion=${BUILD_NUMBER}
+                -Dsonar.projectKey=zomato \
+                -Dsonar.sources=src \
+                -Dsonar.projectName=Zomato-App \
+                -Dsonar.projectVersion=${BUILD_NUMBER}
                 """
             }
         }
