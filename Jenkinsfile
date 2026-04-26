@@ -42,20 +42,23 @@ pipeline {
         stage('SonarQube Analysis') {
             steps {
                 withSonarQubeEnv('sq') {
-                    sh '''
-                    sonar-scanner \
-                      -Dsonar.projectKey=zomato \
-                      -Dsonar.sources=src \
-                      -Dsonar.projectName=Zomato-App \
-                      -Dsonar.projectVersion=${BUILD_NUMBER}
-                    '''
+                    script {
+                        def scannerHome = tool 'sonar-scanner'
+                        sh """
+                        ${scannerHome}/bin/sonar-scanner \
+                          -Dsonar.projectKey=zomato \
+                          -Dsonar.sources=src \
+                          -Dsonar.projectName=Zomato-App \
+                          -Dsonar.projectVersion=${BUILD_NUMBER}
+                        """
+                    }
                 }
             }
         }
 
         stage('Quality Gate') {
             steps {
-                timeout(time: 2, unit: 'MINUTES') {
+                timeout(time: 5, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
                 }
             }
@@ -109,58 +112,58 @@ pipeline {
             }
         }
 
-        stage('Install Helm') {
+        stage('Install Helm (if not exists)') {
             steps {
                 sh '''
-                curl -LO https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz
-                tar -zxvf helm-v3.14.0-linux-amd64.tar.gz
-                mv linux-amd64/helm ./helm
-                chmod +x ./helm
+                if ! command -v helm &> /dev/null
+                then
+                    curl -LO https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz
+                    tar -zxvf helm-v3.14.0-linux-amd64.tar.gz
+                    sudo mv linux-amd64/helm /usr/local/bin/helm
+                fi
+                helm version
                 '''
             }
         }
 
         stage('Setup Kubeconfig') {
-    steps {
-        sh '''
-        aws eks update-kubeconfig --region us-east-1 --name mycluster
-        kubectl get nodes
-        '''
-    }
-}
-
-        stage('Deploy Monitoring') {
             steps {
                 sh '''
-                ./helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
-                ./helm repo update
+                aws sts get-caller-identity
+                aws eks update-kubeconfig --region $AWS_REGION --name $CLUSTER_NAME
+                kubectl get nodes
+                '''
+            }
+        }
 
-                ./helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+        stage('Deploy Monitoring (Prometheus + Grafana)') {
+            steps {
+                sh '''
+                helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
+                helm repo update
+
+                helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
                 --namespace monitoring --create-namespace
                 '''
             }
         }
 
-stage('Expose Grafana') {
-    steps {
-        sh '''
-        echo "Waiting for Grafana service..."
-        sleep 30
-
-        kubectl get svc -n monitoring
-
-        kubectl patch svc monitoring-grafana \
-        -n monitoring \
-        -p '{"spec": {"type": "LoadBalancer"}}'
-        '''
-    }
-}
-
-             stage('Deploy to Kubernetes') {
+        stage('Expose Grafana') {
             steps {
                 sh '''
-                    export KUBECONFIG=/var/lib/jenkins/.kube/config
-                kubectl get nodes
+                echo "Waiting for Grafana..."
+                sleep 30
+
+                kubectl patch svc monitoring-grafana \
+                -n monitoring \
+                -p '{"spec": {"type": "LoadBalancer"}}'
+                '''
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                sh '''
                 kubectl apply -f deployment.yml
                 kubectl apply -f service.yml
                 '''
