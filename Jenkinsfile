@@ -7,17 +7,17 @@ pipeline {
     }
 
     environment {
-        DOCKER_IMAGE = "rajeshtutta123/zomato"
+        DOCKER_IMAGE = "sivav2516/zomato"
         AWS_REGION = "us-east-1"
         CLUSTER_NAME = "mycluster"
-        RECIPIENTS = "rajeshtutta123@gmail.com"
+        RECIPIENTS = "siva.vasamshetti@gmail.com"
     }
 
     stages {
 
         stage('Clone Repo') {
             steps {
-                git branch: 'main', url: 'https://github.com/rajeshtutta/zomato.git'
+                git branch: 'main', url: 'https://github.com/sivavvasamshetti-afk/ZOMATO-Node.js-project.git'
             }
         }
 
