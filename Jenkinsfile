@@ -7,10 +7,11 @@ pipeline {
     }
 
     environment {
-        DOCKER_IMAGE = "sivav2516/zomato"
-        AWS_REGION = "us-east-1"
-        CLUSTER_NAME = "mycluster"
-        RECIPIENTS = "siva.vvasamshetti@gmail.com"
+        DOCKER_IMAGE  = "sivav2516/zomato"
+        AWS_REGION    = "us-east-1"
+        CLUSTER_NAME  = "mycluster"
+        RECIPIENTS    = "siva.vvasamshetti@gmail.com"
+        PROJECT_NAME  = "Zomato Node.js App"
     }
 
     stages {
@@ -35,30 +36,32 @@ pipeline {
 
         stage('Test') {
             steps {
-                sh 'npm test || true'
+                // --passWithNoTests prevents failure when no tests exist
+                sh 'npm test -- --passWithNoTests'
             }
         }
 
         stage('SonarQube Analysis') {
-    steps {
-        script {
-            def scannerHome = tool 'sonar-scanner'
-            withSonarQubeEnv('sq') {
-                sh """
-                ${scannerHome}/bin/sonar-scanner \
-                  -Dsonar.projectKey=zomato \
-                  -Dsonar.sources=src \
-                  -Dsonar.projectName=Zomato-App \
-                  -Dsonar.projectVersion=${BUILD_NUMBER}
-                """
+            steps {
+                script {
+                    def scannerHome = tool 'sonar-scanner'
+                    withSonarQubeEnv('sq') {
+                        sh """
+                        ${scannerHome}/bin/sonar-scanner \
+                          -Dsonar.projectKey=zomato \
+                          -Dsonar.sources=src \
+                          -Dsonar.exclusions=**/node_modules/**,**/build/**,**/*.test.js \
+                          -Dsonar.projectName=Zomato-App \
+                          -Dsonar.projectVersion=${BUILD_NUMBER}
+                        """
+                    }
+                }
             }
         }
-    }
-}
 
         stage('Quality Gate') {
             steps {
-                timeout(time: 2, unit: 'MINUTES') {
+                timeout(time: 5, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
                 }
             }
@@ -90,7 +93,7 @@ pipeline {
             steps {
                 sh '''
                 docker build -t $DOCKER_IMAGE:${BUILD_NUMBER} .
-                docker tag $DOCKER_IMAGE:${BUILD_NUMBER} $DOCKER_IMAGE:latest
+                docker tag  $DOCKER_IMAGE:${BUILD_NUMBER} $DOCKER_IMAGE:latest
                 '''
             }
         }
@@ -115,10 +118,12 @@ pipeline {
         stage('Install Helm') {
             steps {
                 sh '''
-                curl -LO https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz
-                tar -zxvf helm-v3.14.0-linux-amd64.tar.gz
-                mv linux-amd64/helm ./helm
-                chmod +x ./helm
+                if [ ! -f helm ]; then
+                    curl -LO https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz
+                    tar -zxvf helm-v3.14.0-linux-amd64.tar.gz
+                    mv linux-amd64/helm ./helm
+                    chmod +x ./helm
+                fi
                 '''
             }
         }
@@ -135,12 +140,14 @@ pipeline {
         stage('Deploy Monitoring (Prometheus + Grafana)') {
             steps {
                 sh '''
-                ./helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
+                ./helm repo add prometheus-community \
+                    https://prometheus-community.github.io/helm-charts || true
                 ./helm repo update
 
-                ./helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
-                --namespace monitoring --create-namespace \
-                --set grafana.service.type=LoadBalancer
+                ./helm upgrade --install monitoring \
+                    prometheus-community/kube-prometheus-stack \
+                    --namespace monitoring --create-namespace \
+                    --set grafana.service.type=LoadBalancer
                 '''
             }
         }
@@ -150,8 +157,8 @@ pipeline {
                 sh '''
                 echo "Grafana Admin Password:"
                 kubectl get secret monitoring-grafana \
-                -n monitoring \
-                -o jsonpath="{.data.admin-password}" | base64 --decode
+                  -n monitoring \
+                  -o jsonpath="{.data.admin-password}" | base64 --decode
                 echo ""
                 '''
             }
@@ -175,15 +182,13 @@ pipeline {
             }
         }
 
-         stage('Expose Grafana') {
+        stage('Expose Grafana') {
             steps {
                 sh '''
-                echo "Waiting for Grafana..."
-                sleep 30
-
+                echo "Patching Grafana service to LoadBalancer..."
                 kubectl patch svc monitoring-grafana \
-                -n monitoring \
-                -p '{"spec": {"type": "LoadBalancer"}}'
+                  -n monitoring \
+                  -p '{"spec": {"type": "LoadBalancer"}}'
                 '''
             }
         }
@@ -192,29 +197,46 @@ pipeline {
             steps {
                 sh '''
                 kubectl patch svc monitoring-kube-prometheus-prometheus \
-                -n monitoring \
-                -p '{"spec": {"type": "LoadBalancer"}}'
+                  -n monitoring \
+                  -p '{"spec": {"type": "LoadBalancer"}}'
                 '''
+            }
+        }
+        
+        stage('Get Application URL') {
+            steps {
+                script {
+                    def url = sh(
+                        script: '''
+                        kubectl get svc zomatosvc \
+                          -o jsonpath="{.status.loadBalancer.ingress[0].hostname}{.status.loadBalancer.ingress[0].ip}"
+                        ''',
+                        returnStdout: true
+                    ).trim()
+                    env.APP_URL = url
+                    echo "Application URL: ${env.APP_URL}"
+                }
             }
         }
     }
 
-    // ===========================
     post {
 
         success {
             script {
-
                 sleep 40
 
-                def APP_URL = ""
+                // ✅ FIX 1: Use env.VARIABLE_NAME inside post{} — direct var names cause MissingPropertyException
+                def DOCKER_IMAGE_TAG = "${env.DOCKER_IMAGE}:${env.BUILD_NUMBER}"
+
+                def APP_URL     = ""
                 def GRAFANA_URL = ""
-                def PROM_URL = ""
+                def PROM_URL    = ""
 
+                // ✅ FIX 2: Correct service name "zomatosvc" from logs (was "puzzle-game-service")
                 for (int i = 0; i < 5; i++) {
-
                     APP_URL = sh(
-                        script: "kubectl get svc puzzle-game-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || true",
+                        script: "kubectl get svc zomatosvc -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || true",
                         returnStdout: true
                     ).trim()
 
@@ -228,48 +250,44 @@ pipeline {
                         returnStdout: true
                     ).trim()
 
-                    if (APP_URL && GRAFANA_URL && PROM_URL) {
-                        break
-                    }
-
+                    if (APP_URL && GRAFANA_URL && PROM_URL) break
                     sleep 20
                 }
 
-                def DOCKER_IMAGE = "${DOCKER_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
-
                 emailext(
-                    subject: "🚀 Deployment Successful - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                    subject: "🚀 Deployment Successful — ${env.JOB_NAME} #${env.BUILD_NUMBER}",
                     mimeType: 'text/html',
                     body: """
                     <html>
-                    <body style="font-family: Arial;">
+                    <body style="font-family: Arial, sans-serif; color: #333;">
 
-                    <h2 style="color:green;">🎉 Deployment Successful</h2>
+                      <h2 style="color: #2e7d32;">🎉 Deployment Successful</h2>
 
-                    <h3>📌 Project Details</h3>
-                    <ul>
-                        <li><b>Project:</b> ${PROJECT_NAME}</li>
-                        <li><b>Cluster:</b> ${CLUSTER_NAME}</li>
-                    </ul>
+                      <h3>📌 Project Details</h3>
+                      <ul>
+                        <li><b>Project:</b> ${env.PROJECT_NAME}</li>
+                        <li><b>Cluster:</b> ${env.CLUSTER_NAME}</li>
+                        <li><b>Region:</b>  ${env.AWS_REGION}</li>
+                        <li><b>Build:</b>   #${env.BUILD_NUMBER}</li>
+                      </ul>
 
-                    <h3>🐳 Docker Image</h3>
-                    <p>${DOCKER_IMAGE}</p>
+                      <h3>🐳 Docker Image</h3>
+                      <p><code>${DOCKER_IMAGE_TAG}</code></p>
 
-                    <h3>🌐 Application</h3>
-                    <a href="http://${APP_URL}">Open Application</a>
+                      <h3>🌐 Application</h3>
+                      <p><a href="http://${APP_URL}">Open Application →</a></p>
 
-                    <h3>📊 Grafana</h3>
-                    <a href="http://${GRAFANA_URL}">Open Grafana</a>
+                      <h3>📊 Grafana Dashboard</h3>
+                      <p><a href="http://${GRAFANA_URL}">Open Grafana →</a></p>
 
-                    <h3>🔥 Prometheus</h3>
-                    <a href="http://${PROM_URL}:9090">Open Prometheus</a>
+                      <h3>🔥 Prometheus</h3>
+                      <p><a href="http://${PROM_URL}:9090">Open Prometheus →</a></p>
 
-                    <h3>🛠 Jenkins</h3>
-                    <ul>
+                      <h3>🛠 Jenkins Build</h3>
+                      <ul>
                         <li>Job: ${env.JOB_NAME}</li>
-                        <li>Build: ${env.BUILD_NUMBER}</li>
-                        <li><a href="${env.BUILD_URL}">Open Build</a></li>
-                    </ul>
+                        <li><a href="${env.BUILD_URL}">View Build Logs →</a></li>
+                      </ul>
 
                     </body>
                     </html>
@@ -281,19 +299,22 @@ pipeline {
 
         failure {
             emailext(
-                subject: "❌ Deployment Failed - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                subject: "❌ Deployment Failed — ${env.JOB_NAME} #${env.BUILD_NUMBER}",
                 mimeType: 'text/html',
                 body: """
                 <html>
-                <body style="font-family: Arial;">
+                <body style="font-family: Arial, sans-serif; color: #333;">
 
-                <h2 style="color:red;">❌ Deployment Failed</h2>
+                  <h2 style="color: #c62828;">❌ Deployment Failed</h2>
 
-                <p><b>Project:</b> Sliding Puzzle Game</p>
-                <p><b>Cluster:</b> mycluster</p>
+                  <ul>
+                    <li><b>Project:</b> ${env.PROJECT_NAME}</li>
+                    <li><b>Cluster:</b> ${env.CLUSTER_NAME}</li>
+                    <li><b>Build:</b>   #${env.BUILD_NUMBER}</li>
+                  </ul>
 
-                <h3>🔍 Logs</h3>
-                <a href="${env.BUILD_URL}">View Build Logs</a>
+                  <h3>🔍 Investigate</h3>
+                  <p><a href="${env.BUILD_URL}">View Full Build Logs →</a></p>
 
                 </body>
                 </html>
@@ -302,8 +323,9 @@ pipeline {
             )
         }
 
+        // ✅ FIX 3: Correct artifact — Zomato uses zomato-build.zip (not app-*.tar.gz)
         always {
-            archiveArtifacts artifacts: 'app-*.tar.gz', fingerprint: true, allowEmptyArchive: true
+            archiveArtifacts artifacts: 'zomato-build.zip', fingerprint: true, allowEmptyArchive: true
         }
     }
 }
