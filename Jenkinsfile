@@ -7,20 +7,15 @@ pipeline {
     }
 
     environment {
-        DOCKER_USER = "sivav2516"
-        IMAGE_NAME = "sivav2516/zomato"
-        IMAGE_TAG = "${BUILD_NUMBER}"
-        KUBECONFIG = '/var/lib/jenkins/.kube/config'
-        NEXUS_URL = "http://localhost:8081/repository/zomoto"
-        RECIPIENTS = "siva.vvasamshetti@gmail.com"
-
+        DOCKER_IMAGE = "sivav2516/zomato"
+        AWS_REGION = "us-east-1"
         CLUSTER_NAME = "mycluster"
-        PROJECT_NAME = "ZOMATO-Node.js-project"
+        RECIPIENTS = "siva.vvasamshetti@gmail.com"
     }
 
     stages {
 
-        stage('Checkout') {
+        stage('Clone Repo') {
             steps {
                 git branch: 'main', url: 'https://github.com/sivavvasamshetti-afk/ZOMATO-Node.js-project.git'
             }
@@ -32,37 +27,46 @@ pipeline {
             }
         }
 
-        stage('SonarQube Analysis') {
-            steps {
-                withSonarQubeEnv('sq') {
-                    sh '''
-                    /opt/sonar-scanner/bin/sonar-scanner \
-                    -Dsonar.projectKey=game \
-                    -Dsonar.sources=src \
-                    -Dsonar.projectName=game-App \
-                    -Dsonar.projectVersion=${BUILD_NUMBER}
-                    '''
-                }
-            }
-        }
-        
-
-
-        stage('Build') {
+        stage('Build App') {
             steps {
                 sh 'npm run build'
             }
         }
 
+        stage('Test') {
+            steps {
+                sh 'npm test || true'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+    steps {
+        script {
+            def scannerHome = tool 'sonar-scanner'
+            withSonarQubeEnv('sq') {
+                sh """
+                ${scannerHome}/bin/sonar-scanner \
+                  -Dsonar.projectKey=zomato \
+                  -Dsonar.sources=src \
+                  -Dsonar.projectName=Zomato-App \
+                  -Dsonar.projectVersion=${BUILD_NUMBER}
+                """
+            }
+        }
+    }
+}
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 2, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
         stage('Package Artifact') {
             steps {
-                sh '''
-                if [ -d dist ]; then
-                    tar -czf app-${BUILD_NUMBER}.tar.gz dist
-                else
-                    tar -czf app-${BUILD_NUMBER}.tar.gz .
-                fi
-                '''
+                sh 'zip -r zomato-build.zip build/'
             }
         }
 
@@ -74,9 +78,9 @@ pipeline {
                     passwordVariable: 'NEXUS_PASS'
                 )]) {
                     sh '''
-                    curl -u $NEXUS_USER:$NEXUS_PASS \
-                    --upload-file app-${BUILD_NUMBER}.tar.gz \
-                    $NEXUS_URL/app-${BUILD_NUMBER}.tar.gz
+                    curl -v -u $NEXUS_USER:$NEXUS_PASS \
+                    --upload-file zomato-build.zip \
+                    http://localhost:8081/repository/raw-hosted/zomato-build-${BUILD_NUMBER}.zip
                     '''
                 }
             }
@@ -85,13 +89,13 @@ pipeline {
         stage('Docker Build') {
             steps {
                 sh '''
-                docker build -t $DOCKER_USER/$IMAGE_NAME:$IMAGE_TAG .
-                docker tag $DOCKER_USER/$IMAGE_NAME:$IMAGE_TAG $DOCKER_USER/$IMAGE_NAME:latest
+                docker build -t $DOCKER_IMAGE:${BUILD_NUMBER} .
+                docker tag $DOCKER_IMAGE:${BUILD_NUMBER} $DOCKER_IMAGE:latest
                 '''
             }
         }
 
-        stage('Push to DockerHub') {
+        stage('Docker Push') {
             steps {
                 withCredentials([usernamePassword(
                     credentialsId: 'dockerhub-cred',
@@ -100,50 +104,78 @@ pipeline {
                 )]) {
                     sh '''
                     echo $PASS | docker login -u $USER --password-stdin
-                    docker push $DOCKER_USER/$IMAGE_NAME:$IMAGE_TAG
-                    docker push $DOCKER_USER/$IMAGE_NAME:latest
+                    docker push $DOCKER_IMAGE:${BUILD_NUMBER}
+                    docker push $DOCKER_IMAGE:latest
+                    docker logout
                     '''
                 }
-            }
-        }
-
-        stage('Deploy to Kubernetes') {
-            steps {
-                sh '''
-                aws eks update-kubeconfig --region ap-south-1 --name mycluster
-
-                kubectl apply -f deployment.yml
-                kubectl apply -f service.yml
-                '''
             }
         }
 
         stage('Install Helm') {
             steps {
                 sh '''
-                if [ ! -f helm ]; then
-                    curl -LO https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz
-                    tar -zxvf helm-v3.14.0-linux-amd64.tar.gz
-                    mv linux-amd64/helm ./helm
-                    chmod +x ./helm
-                fi
+                curl -LO https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz
+                tar -zxvf helm-v3.14.0-linux-amd64.tar.gz
+                mv linux-amd64/helm ./helm
+                chmod +x ./helm
                 '''
             }
         }
 
-        stage('Deploy Monitoring') {
+        stage('Setup Kubeconfig') {
+            steps {
+                sh '''
+                aws eks update-kubeconfig --region $AWS_REGION --name $CLUSTER_NAME
+                kubectl get nodes
+                '''
+            }
+        }
+
+        stage('Deploy Monitoring (Prometheus + Grafana)') {
             steps {
                 sh '''
                 ./helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
                 ./helm repo update
 
                 ./helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
-                --namespace monitoring --create-namespace
+                --namespace monitoring --create-namespace \
+                --set grafana.service.type=LoadBalancer
                 '''
             }
         }
 
-        stage('Expose Grafana') {
+        stage('Get Grafana Password') {
+            steps {
+                sh '''
+                echo "Grafana Admin Password:"
+                kubectl get secret monitoring-grafana \
+                -n monitoring \
+                -o jsonpath="{.data.admin-password}" | base64 --decode
+                echo ""
+                '''
+            }
+        }
+
+        stage('Deploy Application to EKS') {
+            steps {
+                sh '''
+                kubectl apply -f deployment.yml
+                kubectl apply -f service.yml
+                '''
+            }
+        }
+
+        stage('Wait for LoadBalancer') {
+            steps {
+                sh '''
+                echo "Waiting for LoadBalancer to be ready..."
+                sleep 60
+                '''
+            }
+        }
+
+         stage('Expose Grafana') {
             steps {
                 sh '''
                 echo "Waiting for Grafana..."
