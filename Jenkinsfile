@@ -7,7 +7,7 @@ pipeline {
     }
 
     environment {
-        DOCKER_IMAGE = "sivavasamshetti123/zomato"
+        DOCKER_IMAGE = "sivav2516/zomato"
         AWS_REGION = "us-east-1"
         CLUSTER_NAME = "mycluster"
         RECIPIENTS = "siva.vvasamshetti@gmail.com"
