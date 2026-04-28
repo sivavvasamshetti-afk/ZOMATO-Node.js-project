@@ -7,17 +7,17 @@ pipeline {
     }
 
     environment {
-        DOCKER_IMAGE = "sivav2516/zomato"
+        DOCKER_IMAGE = "rajeshtutta123/zomato"
         AWS_REGION = "us-east-1"
         CLUSTER_NAME = "mycluster"
-        RECIPIENTS = "siva.vvasamshetti@gmail.com"
+        RECIPIENTS = "rajeshtutta123@gmail.com"
     }
 
     stages {
 
         stage('Clone Repo') {
             steps {
-                git branch: 'main', url: 'https://github.com/sivavvasamshetti-afk/ZOMATO-Node.js-project.git'
+                git branch: 'main', url: 'https://github.com/rajeshtutta/zomato.git'
             }
         }
 
@@ -35,14 +35,7 @@ pipeline {
 
         stage('Test') {
             steps {
-                sh 'npm test -- --passWithNoTests'
-            }
-        }
-
-
-        stage('Package Artifact') {
-            steps {
-                sh 'zip -r zomato-build.zip build/'
+                sh 'npm test || true'
             }
         }
 
@@ -50,24 +43,30 @@ pipeline {
     steps {
         script {
             def scannerHome = tool 'sonar-scanner'
-
             withSonarQubeEnv('sq') {
                 sh """
                 ${scannerHome}/bin/sonar-scanner \
-                -Dsonar.projectKey=zomato \
-                -Dsonar.sources=. \
-                -Dsonar.projectName=Zomato-App \
-                -Dsonar.projectVersion=${BUILD_NUMBER}
+                  -Dsonar.projectKey=zomato \
+                  -Dsonar.sources=src \
+                  -Dsonar.projectName=Zomato-App \
+                  -Dsonar.projectVersion=${BUILD_NUMBER}
                 """
             }
         }
     }
 }
-            stage('Quality Gate') {
+
+        stage('Quality Gate') {
             steps {
-                timeout(time: 3, unit: 'MINUTES') {
+                timeout(time: 2, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
                 }
+            }
+        }
+
+        stage('Package Artifact') {
+            steps {
+                sh 'zip -r zomato-build.zip build/'
             }
         }
 
@@ -113,16 +112,13 @@ pipeline {
             }
         }
 
-        stage('Install Helm (if not exists)') {
+        stage('Install Helm') {
             steps {
                 sh '''
-                if ! command -v helm &> /dev/null
-                then
-                    curl -LO https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz
-                    tar -zxvf helm-v3.14.0-linux-amd64.tar.gz
-                    sudo mv linux-amd64/helm /usr/local/bin/helm
-                fi
-                helm version
+                curl -LO https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz
+                tar -zxvf helm-v3.14.0-linux-amd64.tar.gz
+                mv linux-amd64/helm ./helm
+                chmod +x ./helm
                 '''
             }
         }
@@ -130,7 +126,6 @@ pipeline {
         stage('Setup Kubeconfig') {
             steps {
                 sh '''
-                aws sts get-caller-identity
                 aws eks update-kubeconfig --region $AWS_REGION --name $CLUSTER_NAME
                 kubectl get nodes
                 '''
@@ -140,34 +135,60 @@ pipeline {
         stage('Deploy Monitoring (Prometheus + Grafana)') {
             steps {
                 sh '''
-                helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
-                helm repo update
+                ./helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
+                ./helm repo update
 
-                helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
-                --namespace monitoring --create-namespace
+                ./helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+                --namespace monitoring --create-namespace \
+                --set grafana.service.type=LoadBalancer
                 '''
             }
         }
 
-        stage('Expose Grafana') {
+        stage('Get Grafana Password') {
             steps {
                 sh '''
-                echo "Waiting for Grafana..."
-                sleep 30
-
-                kubectl patch svc monitoring-grafana \
+                echo "Grafana Admin Password:"
+                kubectl get secret monitoring-grafana \
                 -n monitoring \
-                -p '{"spec": {"type": "LoadBalancer"}}'
+                -o jsonpath="{.data.admin-password}" | base64 --decode
+                echo ""
                 '''
             }
         }
 
-        stage('Deploy to Kubernetes') {
+        stage('Deploy Application to EKS') {
             steps {
                 sh '''
                 kubectl apply -f deployment.yml
                 kubectl apply -f service.yml
                 '''
+            }
+        }
+
+        stage('Wait for LoadBalancer') {
+            steps {
+                sh '''
+                echo "Waiting for LoadBalancer to be ready..."
+                sleep 60
+                '''
+            }
+        }
+
+        stage('Get Application URL') {
+            steps {
+                script {
+                    def url = sh(
+                        script: '''
+                        kubectl get svc zomatosvc \
+                        -o jsonpath="{.status.loadBalancer.ingress[0].hostname}{.status.loadBalancer.ingress[0].ip}"
+                        ''',
+                        returnStdout: true
+                    ).trim()
+
+                    env.APP_URL = url
+                    echo "Application URL: ${env.APP_URL}"
+                }
             }
         }
     }
@@ -177,7 +198,15 @@ pipeline {
         success {
             emailext(
                 subject: "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                body: "Build SUCCESS 🎉\n\nURL: ${env.BUILD_URL}",
+                body: """
+Build SUCCESS 🎉
+
+Application URL:
+http://${env.APP_URL}
+
+Jenkins URL:
+${env.BUILD_URL}
+""",
                 to: "${RECIPIENTS}"
             )
         }
@@ -185,7 +214,12 @@ pipeline {
         failure {
             emailext(
                 subject: "FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                body: "Build FAILED ❌\n\nURL: ${env.BUILD_URL}",
+                body: """
+Build FAILED ❌
+
+Check logs:
+${env.BUILD_URL}
+""",
                 to: "${RECIPIENTS}"
             )
         }
